@@ -1,0 +1,999 @@
+name: Build Meow Client
+on:
+  push:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.2.0"
+      - name: Write files 1
+        run: |
+          mkdir -p "proj/"
+          cat > "proj/build.gradle" <<'EOF_MEOW'
+          plugins { id 'fabric-loom' version '1.14-SNAPSHOT' }
+          version = project.mod_version
+          group = project.maven_group
+          base { archivesName = project.archives_base_name }
+          dependencies {
+            minecraft "com.mojang:minecraft:${project.minecraft_version}"
+            mappings "net.fabricmc:yarn:${project.yarn_mappings}:v2"
+            modImplementation "net.fabricmc:fabric-loader:${project.loader_version}"
+            modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+          }
+          processResources {
+            inputs.property "version", project.version
+            filesMatching("fabric.mod.json") { expand "version": inputs.properties.version }
+          }
+          tasks.withType(JavaCompile).configureEach { it.options.release = 21 }
+          java { sourceCompatibility = JavaVersion.VERSION_21; targetCompatibility = JavaVersion.VERSION_21 }
+          EOF_MEOW
+          mkdir -p "proj/"
+          cat > "proj/gradle.properties" <<'EOF_MEOW'
+          org.gradle.jvmargs=-Xmx2G
+          minecraft_version=1.21.11
+          yarn_mappings=1.21.11+build.1
+          loader_version=0.18.1
+          fabric_version=0.139.4+1.21.11
+          mod_version=1.0.0
+          maven_group=dev.meow
+          archives_base_name=meowclient
+          EOF_MEOW
+          mkdir -p "proj/"
+          cat > "proj/settings.gradle" <<'EOF_MEOW'
+          pluginManagement { repositories { maven { url = 'https://maven.fabricmc.net/' }; mavenCentral(); gradlePluginPortal() } }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client"
+          cat > "proj/src/main/java/dev/meow/client/MeowClient.java" <<'EOF_MEOW'
+          package dev.meow.client;
+          import dev.meow.client.core.*;
+          import dev.meow.client.gui.MeowScreen;
+          import dev.meow.client.util.U;
+          import net.fabricmc.api.ClientModInitializer;
+          import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+          import net.minecraft.client.gui.screen.TitleScreen;
+          import org.lwjgl.glfw.GLFW;
+          public class MeowClient implements ClientModInitializer {
+          public static ModuleManager mm;
+          private boolean prevShift;
+          @Override public void onInitializeClient() {
+          mm = new ModuleManager();
+          Config.load();
+          ClientTickEvents.START_CLIENT_TICK.register(c -> mm.startTick());
+          ClientTickEvents.END_CLIENT_TICK.register(c -> {
+          mm.endTick();
+          boolean d = U.keyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
+          if (d && !prevShift && (c.currentScreen == null || c.currentScreen instanceof TitleScreen)) c.setScreen(new MeowScreen());
+          prevShift = d;
+          });
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/Category.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          public enum Category { COMBAT, MACE, MISC, MOVEMENT, SPEAR, VISUAL }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/Config.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          import dev.meow.client.MeowClient;
+          import net.fabricmc.loader.api.FabricLoader;
+          import java.nio.file.*;
+          import java.util.*;
+          public class Config {
+          static Path path() { return FabricLoader.getInstance().getConfigDir().resolve("meowclient").resolve("default.yml"); }
+          private static void write(StringBuilder sb, Module m) {
+          sb.append("  ").append(m.name).append(":\n");
+          sb.append("    enabled: ").append(m.enabled).append('\n');
+          sb.append("    key: ").append(m.key).append('\n');
+          sb.append("    bindMode: ").append(m.bindMode).append('\n');
+          sb.append("    favorite: ").append(m.favorite).append('\n');
+          sb.append("    expanded: ").append(m.expanded).append('\n');
+          sb.append("    settings:\n");
+          for (Setting s : m.settings) sb.append("      ").append(s.name).append(": ").append(s.get()).append('\n');
+          }
+          public static void save() {
+          try {
+          StringBuilder sb = new StringBuilder("# Meow Client config\nmodules:\n");
+          write(sb, MeowClient.mm.theme);
+          for (Module m : MeowClient.mm.all) write(sb, m);
+          Files.createDirectories(path().getParent());
+          Files.writeString(path(), sb.toString());
+          } catch (Exception e) { e.printStackTrace(); }
+          }
+          private static Object val(String v) {
+          if (v.equals("true")) return true; if (v.equals("false")) return false;
+          try { return Double.parseDouble(v); } catch (Exception e) { return v; }
+          }
+          public static void load() {
+          try {
+          if (!Files.exists(path())) return;
+          Map<String, Module> by = new HashMap<>(); by.put(MeowClient.mm.theme.name, MeowClient.mm.theme);
+          for (Module m : MeowClient.mm.all) by.put(m.name, m);
+          Module cur = null; boolean inSet = false;
+          for (String line : Files.readAllLines(path())) {
+          String t = line.strip(); if (t.isEmpty() || t.startsWith("#")) continue;
+          int ind = line.length() - line.stripLeading().length();
+          if (ind == 2 && t.endsWith(":")) { cur = by.get(t.substring(0, t.length() - 1)); inSet = false; continue; }
+          if (cur == null) continue;
+          if (ind == 4 && t.equals("settings:")) { inSet = true; continue; }
+          int i = t.indexOf(": "); if (i < 0) continue;
+          String k = t.substring(0, i), v = t.substring(i + 2).strip();
+          if (ind == 4) {
+          inSet = false;
+          switch (k) {
+          case "enabled" -> cur.enabled = v.equals("true");
+          case "key" -> cur.key = (int) Double.parseDouble(v);
+          case "bindMode" -> cur.bindMode = (int) Double.parseDouble(v);
+          case "favorite" -> cur.favorite = v.equals("true");
+          case "expanded" -> cur.expanded = v.equals("true");
+          default -> {}
+          }
+          } else if (ind == 6 && inSet) {
+          for (Setting s : cur.settings) if (s.name.equals(k)) s.set(val(v));
+          }
+          }
+          } catch (Exception e) { e.printStackTrace(); }
+          }
+          }
+          EOF_MEOW
+      - name: Write files 2
+        run: |
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/Module.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          import net.minecraft.client.MinecraftClient;
+          import java.util.ArrayList;
+          import java.util.List;
+          public abstract class Module {
+          public final String name, desc; public final Category cat;
+          public boolean enabled, expanded = true, favorite, keyPrev;
+          public int key = -1;
+          public int bindMode = 1;
+          public final List<Setting> settings = new ArrayList<>();
+          protected final MinecraftClient mc = MinecraftClient.getInstance();
+          protected Module(String n, String d, Category c) { name = n; desc = d; cat = c; }
+          protected <T extends Setting> T add(T s) { settings.add(s); return s; }
+          public void toggle() { setEnabled(!enabled); }
+          public void setEnabled(boolean b) { if (b == enabled) return; enabled = b; if (b) onEnable(); else onDisable(); }
+          public void onEnable() {}
+          public void onDisable() {}
+          public void onStartTick() {}
+          public void onTick() {}
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/ModuleManager.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          import dev.meow.client.modules.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.client.MinecraftClient;
+          import java.util.ArrayList;
+          import java.util.List;
+          public class ModuleManager {
+          public final List<Module> all = new ArrayList<>();
+          public final ThemeModule theme = new ThemeModule();
+          private final MinecraftClient mc = MinecraftClient.getInstance();
+          public ModuleManager() {
+          all.add(new AimAssist()); all.add(new TriggerBot()); all.add(new AutoCrystal()); all.add(new SafeAnchors());
+          all.add(new AutoMace()); all.add(new BreachSwap()); all.add(new MaceSwap());
+          all.add(new AutoPearlCatch());
+          }
+          private boolean ready() { return mc.player != null && mc.world != null && mc.interactionManager != null; }
+          public void startTick() {
+          if (!ready() || mc.currentScreen != null) return;
+          for (Module m : all) {
+          if (m.key < 0 || m.bindMode == 2) continue;
+          boolean d = U.keyDown(m.key);
+          if (m.bindMode == 1) { if (d && !m.keyPrev) m.toggle(); } else m.setEnabled(d);
+          m.keyPrev = d;
+          }
+          for (Module m : all) if (m.enabled) m.onStartTick();
+          }
+          public void endTick() {
+          if (!ready() || mc.currentScreen != null) return;
+          for (Module m : all) if (m.enabled) m.onTick();
+          }
+          public long active() { return all.stream().filter(m -> m.enabled).count(); }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/Setting.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          import java.util.function.BooleanSupplier;
+          public abstract class Setting {
+          public final String name;
+          public BooleanSupplier visible = () -> true;
+          protected Setting(String n) { name = n; }
+          public Setting showIf(BooleanSupplier s) { visible = s; return this; }
+          public abstract Object get();
+          public abstract void set(Object o);
+          public static class Bool extends Setting {
+          public boolean v;
+          public Bool(String n, boolean d) { super(n); v = d; }
+          public Object get() { return v; }
+          public void set(Object o) { if (o instanceof Boolean b) v = b; }
+          }
+          public static class Num extends Setting {
+          public double v, min, max, step;
+          public Num(String n, double min, double max, double step, double d) { super(n); this.min = min; this.max = max; this.step = step; v = d; }
+          public int i() { return (int) Math.round(v); }
+          public Object get() { return v; }
+          public void set(Object o) { if (o instanceof Number n) v = Math.max(min, Math.min(max, n.doubleValue())); }
+          }
+          public static class Mode extends Setting {
+          public String[] modes; public int idx;
+          public Mode(String n, String[] m, int d) { super(n); modes = m; idx = d; }
+          public String cur() { return modes[idx]; }
+          public Object get() { return modes[idx]; }
+          public void set(Object o) { if (o instanceof String s) for (int i = 0; i < modes.length; i++) if (modes[i].equals(s)) idx = i; }
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/core"
+          cat > "proj/src/main/java/dev/meow/client/core/ThemeModule.java" <<'EOF_MEOW'
+          package dev.meow.client.core;
+          public class ThemeModule extends Module {
+          public static final Setting.Num R = new Setting.Num("Accent Red", 0, 255, 1, 232);
+          public static final Setting.Num G = new Setting.Num("Accent Green", 0, 255, 1, 160);
+          public static final Setting.Num B = new Setting.Num("Accent Blue", 0, 255, 1, 32);
+          public static final Setting.Bool ORBS = new Setting.Bool("Cursor Orbs", true);
+          public static final Setting.Num ORB_COUNT = new Setting.Num("Orb Count", 1, 8, 1, 3);
+          public static final Setting.Num ORB_SIZE = new Setting.Num("Orb Size", 3, 12, 1, 5);
+          public ThemeModule() {
+          super("Appearance", "GUI colors and cursor effects", Category.VISUAL);
+          settings.add(R); settings.add(G); settings.add(B); settings.add(ORBS); settings.add(ORB_COUNT); settings.add(ORB_SIZE);
+          }
+          public static int accent() { return 0xFF000000 | (R.i() << 16) | (G.i() << 8) | B.i(); }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/gui"
+          cat > "proj/src/main/java/dev/meow/client/gui/Fonts.java" <<'EOF_MEOW'
+          package dev.meow.client.gui;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.text.*;
+          import net.minecraft.util.Identifier;
+          public final class Fonts {
+          private static Style style; private static boolean init;
+          private static void ensure() {
+          if (init) return; init = true;
+          Identifier ttf = Identifier.of("meowclient", "font/inter.ttf");
+          if (MinecraftClient.getInstance().getResourceManager().getResource(ttf).isPresent()) {
+          style = Style.EMPTY.withFont(new StyleSpriteSource.Font(Identifier.of("meowclient", "ui")));
+          }
+          }
+          private static Text t(String s) { ensure(); return style == null ? Text.literal(s) : Text.literal(s).setStyle(style); }
+          public static int w(String s) { return MinecraftClient.getInstance().textRenderer.getWidth(t(s)); }
+          public static void draw(DrawContext c, String s, int x, int y, int color) { c.drawText(MinecraftClient.getInstance().textRenderer, t(s), x, y, color, false); }
+          public static void center(DrawContext c, String s, int cx, int y, int color) { draw(c, s, cx - w(s) / 2, y, color); }
+          public static String fit(String s, int max) { if (w(s) <= max) return s; while (s.length() > 1 && w(s + "..") > max) s = s.substring(0, s.length() - 1); return s + ".."; }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/gui"
+          cat > "proj/src/main/java/dev/meow/client/gui/MeowScreen.java" <<'EOF_MEOW'
+          package dev.meow.client.gui;
+          import dev.meow.client.MeowClient;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.client.gui.DrawContext;
+          import net.minecraft.client.gui.screen.Screen;
+          import net.minecraft.text.Text;
+          import org.lwjgl.glfw.GLFW;
+          import java.util.*;
+          public class MeowScreen extends Screen {
+          enum Page {
+          ALL("All", null), FAV("Favorites", null), COMBAT("Combat", Category.COMBAT), MACE("Mace", Category.MACE), MISC("Misc", Category.MISC),
+          MOVEMENT("Movement", Category.MOVEMENT), SPEAR("Spear", Category.SPEAR), VISUAL("Visual", Category.VISUAL),
+          PRESETS("Presets", null), KEYBINDS("Keybinds", null), APPEARANCE("Appearance", null), SETTINGS("Settings", null);
+          final String label; final Category cat;
+          Page(String l, Category c) { label = l; cat = c; }
+          boolean top() { return ordinal() <= VISUAL.ordinal(); }
+          }
+          static final int PANEL = 0xF2323547, SIDE = 0xFF2A2D3B, CARD = 0xFF3B3E52, ROW = 0xFF2F3243, TEXT = 0xFFEDEEF3, DIM = 0xFF9A9DB2, OFF = 0xFF565A70;
+          private static Page lastPage = Page.COMBAT; private static float lastScroll;
+          private final Screen parent;
+          private boolean prevDown, prevR, prevShift, down, click, rclick;
+          private final boolean[] kp = new boolean[400];
+          private String search = ""; private boolean searchFocus, activeOnly, namesOnly;
+          private Module listening; private Setting.Num dragging; private int dragX, dragW;
+          private float scroll = lastScroll, maxScroll;
+          private final Map<String, Float> anim = new HashMap<>();
+          private int mx, my, cx, cy, cw, ch;
+          private final long t0 = System.currentTimeMillis();
+          public MeowScreen() {
+          super(Text.literal("Meow Client"));
+          parent = net.minecraft.client.MinecraftClient.getInstance().currentScreen;
+          prevShift = U.keyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
+          }
+          @Override public boolean shouldPause() { return false; }
+          @Override public void close() { Config.save(); lastScroll = scroll; client.setScreen(parent); }
+          @Override public boolean mouseScrolled(double x, double y, double h, double v) { scroll = Math.max(0, Math.min(maxScroll, scroll - (float) v * 18f)); return true; }
+          private float an(String k, boolean on) { float v = anim.getOrDefault(k, on ? 1f : 0f); v += ((on ? 1f : 0f) - v) * 0.28f; anim.put(k, v); return v; }
+          private boolean hit(int x, int y, int w, int h) { return mx >= x && mx < x + w && my >= y && my < y + h; }
+          private boolean hitC(int x, int y, int w, int h) { return hit(x, y, w, h) && my >= cy && my < cy + ch; }
+          private int accent() { return ThemeModule.accent(); }
+          private static String keyName(int k) {
+          if (k < 0) return "None";
+          String n = GLFW.glfwGetKeyName(k, 0); if (n != null) return n.toUpperCase();
+          return switch (k) { case GLFW.GLFW_KEY_RIGHT_SHIFT -> "RShift"; case GLFW.GLFW_KEY_LEFT_SHIFT -> "LShift"; case GLFW.GLFW_KEY_SPACE -> "Space";
+          case GLFW.GLFW_KEY_LEFT_CONTROL -> "LCtrl"; case GLFW.GLFW_KEY_LEFT_ALT -> "LAlt"; default -> "K" + k; };
+          }
+          private void pollKeys() {
+          for (int k = 32; k < 349; k++) {
+          boolean d = U.keyDown(k); boolean press = d && !kp[k]; kp[k] = d; if (!press) continue;
+          if (listening != null) { listening.key = k == GLFW.GLFW_KEY_ESCAPE ? -1 : k; if (listening.key >= 0 && listening.bindMode == 2) listening.bindMode = 1; listening = null; continue; }
+          if (searchFocus) {
+          if (k == GLFW.GLFW_KEY_BACKSPACE && !search.isEmpty()) search = search.substring(0, search.length() - 1);
+          else if (k == GLFW.GLFW_KEY_ESCAPE || k == GLFW.GLFW_KEY_ENTER) searchFocus = false;
+          else if (search.length() < 20 && ((k >= 'A' && k <= 'Z') || (k >= '0' && k <= '9'))) search += Character.toLowerCase((char) k);
+          else if (k == GLFW.GLFW_KEY_SPACE) search += " ";
+          }
+          }
+          }
+          @Override public void render(DrawContext c, int mouseX, int mouseY, float delta) {
+          mx = mouseX; my = mouseY;
+          down = U.mouseDown(0); click = down && !prevDown; prevDown = down;
+          boolean r = U.mouseDown(1); rclick = r && !prevR; prevR = r;
+          boolean sh = U.keyDown(GLFW.GLFW_KEY_RIGHT_SHIFT);
+          if (sh && !prevShift) { close(); return; } prevShift = sh;
+          if (!down) dragging = null;
+          pollKeys();
+          if (client.world == null) super.renderBackground(c, mouseX, mouseY, delta);
+          c.fill(0, 0, width, height, 0x55000000);
+          int pw = Math.min(width - 12, 660), ph = Math.min(height - 12, 370);
+          int px = (width - pw) / 2, py = (height - ph) / 2;
+          int SB = Math.min(96, pw / 4);
+          R.rrect(c, px - 1, py - 1, pw + 2, ph + 2, 9, 0x55000000);
+          R.rrect(c, px, py, pw, ph, 8, PANEL);
+          R.rrect(c, px + 5, py + 5, SB, ph - 10, 6, SIDE);
+          R.rrect(c, px + 11, py + 11, 14, 14, 3, 0xFFF1F1F4); Fonts.center(c, "M", px + 18, py + 14, 0xFF23252F);
+          Fonts.draw(c, "MEOW", px + 31, py + 14, TEXT);
+          int iy = py + 34;
+          for (Page p : Page.values()) if (p.top()) { sideItem(c, p, px + 10, iy, SB - 10); iy += 16; }
+          int by = py + ph - 10 - 4 * 16 - 2;
+          c.fill(px + 11, by - 5, px + 5 + SB - 6, by - 4, 0x33FFFFFF);
+          for (Page p : Page.values()) if (!p.top()) { sideItem(c, p, px + 10, by, SB - 10); by += 16; }
+          int hx = px + SB + 11, hy = py + 5, hw = pw - SB - 16, hh = 26;
+          R.rrect(c, hx, hy, hw, hh, 6, SIDE);
+          Fonts.draw(c, lastPage.label, hx + 8, hy + 5, TEXT);
+          Fonts.draw(c, MeowClient.mm.active() + " active", hx + 8, hy + 15, DIM);
+          int rx = hx + hw - 6;
+          int bw = Fonts.w("Names Only") + 10; rx -= bw; chip(c, rx, hy + 6, bw, 14, "Names Only", namesOnly, () -> namesOnly = !namesOnly);
+          bw = Fonts.w("Active Only") + 10; rx -= bw + 4; chip(c, rx, hy + 6, bw, 14, "Active Only", activeOnly, () -> activeOnly = !activeOnly);
+          int sw = Math.max(60, Math.min(120, rx - (hx + 80) - 6)); rx -= sw + 4;
+          if (sw > 50) {
+          R.outline(c, rx, hy + 6, sw, 14, 4, searchFocus ? accent() : 0xFF4A4E65, 0xFF262938);
+          Fonts.draw(c, search.isEmpty() && !searchFocus ? "Search..." : Fonts.fit(search + (searchFocus && (System.currentTimeMillis() / 500) % 2 == 0 ? "|" : ""), sw - 10), rx + 5, hy + 9, search.isEmpty() ? DIM : TEXT);
+          if (click) searchFocus = hit(rx, hy + 6, sw, 14);
+          }
+          cx = hx; cy = hy + hh + 6; cw = hw; ch = py + ph - 5 - cy;
+          c.enableScissor(cx, cy, cx + cw, cy + ch);
+          int total = drawContent(c);
+          c.disableScissor();
+          maxScroll = Math.max(0, total - ch);
+          scroll = Math.max(0, Math.min(maxScroll, scroll));
+          if (maxScroll > 0) { int th = Math.max(16, (int) (ch * (ch / (float) total))); int ty = cy + (int) ((ch - th) * (scroll / maxScroll)); R.rrect(c, cx + cw - 3, ty, 2, th, 1, 0x88FFFFFF); }
+          if (ThemeModule.ORBS.v) {
+          float tt = (System.currentTimeMillis() - t0) / 1000f; int ac = accent(); int n = ThemeModule.ORB_COUNT.i(); int rad = ThemeModule.ORB_SIZE.i();
+          R.glow(c, mx, my, rad * 5, ac, 0.45f);
+          for (int i = 0; i < n; i++) {
+          double a = tt * 2.0 + i * Math.PI * 2 / n;
+          R.glow(c, (int) (mx + Math.cos(a) * rad * 3.4), (int) (my + Math.sin(a) * rad * 3.4), rad, ac, 1.0f);
+          double b = a - 0.35; R.glow(c, (int) (mx + Math.cos(b) * rad * 3.4), (int) (my + Math.sin(b) * rad * 3.4), rad * 0.6, ac, 0.6f);
+          }
+          }
+          }
+          private void sideItem(DrawContext c, Page p, int x, int y, int w) {
+          boolean sel = lastPage == p; boolean hov = hit(x, y, w, 14);
+          float a = an("side" + p, sel);
+          if (a > 0.02f) R.outline(c, x, y, w, 14, 4, R.alpha(accent(), (int) (255 * a)), R.mix(0xFF2A2D3B, 0xFF3B3427, a));
+          else if (hov) R.rrect(c, x, y, w, 14, 4, 0xFF343748);
+          Fonts.draw(c, p.label, x + 8, y + 3, sel ? TEXT : DIM);
+          if (click && hov) { lastPage = p; scroll = 0; }
+          }
+          private void chip(DrawContext c, int x, int y, int w, int h, String t, boolean on, Runnable act) {
+          boolean hov = hit(x, y, w, h);
+          R.outline(c, x, y, w, h, 4, on ? accent() : 0xFF4A4E65, on ? R.mix(0xFF262938, accent(), 0.25f) : (hov ? 0xFF303346 : 0xFF262938));
+          Fonts.center(c, t, x + w / 2, y + 3, on ? TEXT : DIM);
+          if (click && hov) act.run();
+          }
+          private List<Module> visible() {
+          List<Module> out = new ArrayList<>();
+          for (Module m : MeowClient.mm.all) {
+          Page p = lastPage;
+          if (p.cat != null && m.cat != p.cat) continue;
+          if (p == Page.FAV && !m.favorite) continue;
+          if (activeOnly && !m.enabled) continue;
+          String q = search.trim().toLowerCase();
+          if (!q.isEmpty() && !(m.name.toLowerCase().contains(q) || (!namesOnly && m.desc.toLowerCase().contains(q)))) continue;
+          out.add(m);
+          }
+          return out;
+          }
+          private int drawContent(DrawContext c) {
+          int top = cy - (int) scroll;
+          if (lastPage == Page.APPEARANCE) { return drawCards(c, List.of(MeowClient.mm.theme), top, true); }
+          if (lastPage == Page.KEYBINDS) {
+          int y = top;
+          for (Module m : MeowClient.mm.all) {
+          R.rrect(c, cx, y, cw - 6, 18, 4, CARD);
+          Fonts.draw(c, m.name, cx + 8, y + 5, TEXT);
+          String k = m.key < 0 ? "None" : keyName(m.key) + (m.bindMode == 0 ? " (hold)" : " (toggle)");
+          Fonts.draw(c, k, cx + cw - 12 - Fonts.w(k), y + 5, m.key < 0 ? DIM : accent());
+          y += 22;
+          }
+          return y - top;
+          }
+          if (lastPage == Page.PRESETS || lastPage == Page.SETTINGS) {
+          R.rrect(c, cx, top, cw - 6, 36, 5, CARD);
+          Fonts.draw(c, lastPage == Page.PRESETS ? "Preset: default (autoloads on start)" : "Config: config/meowclient/default.json", cx + 8, top + 8, TEXT);
+          Fonts.draw(c, "Saved automatically when you close the GUI.", cx + 8, top + 20, DIM);
+          return 40;
+          }
+          return drawCards(c, visible(), top, false);
+          }
+          private int rowH(Setting s) { return s instanceof Setting.Num ? 23 : 17; }
+          private int drawCards(DrawContext c, List<Module> mods, int top, boolean theme) {
+          int cols = cw >= 380 ? 2 : 1, gap = 6; int colW = (cw - 6 - (cols - 1) * gap) / cols;
+          int[] colY = new int[cols]; Arrays.fill(colY, top);
+          for (Module m : mods) {
+          int col = 0; for (int i = 1; i < cols; i++) if (colY[i] < colY[col]) col = i;
+          int h = drawCard(c, m, cx + col * (colW + gap), colY[col], colW, theme);
+          colY[col] += h + gap;
+          }
+          int mxY = top; for (int y : colY) mxY = Math.max(mxY, y);
+          return mxY - top;
+          }
+          private int drawCard(DrawContext c, Module m, int x, int y, int w, boolean theme) {
+          int h = 30;
+          if (m.expanded) { if (!theme) h += 17; for (Setting s : m.settings) if (s.visible.getAsBoolean()) h += rowH(s); h += 4; }
+          R.rrect(c, x, y, w, h, 6, CARD);
+          Fonts.draw(c, m.name, x + 8, y + 6, TEXT);
+          Fonts.draw(c, Fonts.fit(m.desc, w - 80), x + 8, y + 17, DIM);
+          int hx = x + w - 14;
+          if (hitC(hx - 4, y + 4, 12, 14)) { if (click) m.expanded = !m.expanded; }
+          Fonts.center(c, m.expanded ? "v" : ">", hx + 2, y + 8, DIM);
+          if (!theme) {
+          int tx = hx - 30; float a = an("t" + m.name, m.enabled);
+          R.rrect(c, tx, y + 8, 22, 11, 5, R.mix(OFF, accent(), a));
+          R.circle(c, tx + 5 + (int) (12 * a) + 1, y + 13, 4, 0xFFFFFFFF);
+          if (hitC(tx, y + 6, 24, 15) && click) m.toggle();
+          int fx = tx - 14; boolean fv = m.favorite;
+          Fonts.center(c, "*", fx + 4, y + 8, fv ? accent() : DIM);
+          if (hitC(fx - 2, y + 5, 12, 14) && click) m.favorite = !m.favorite;
+          }
+          if (!m.expanded) return h;
+          int ry = y + 30;
+          if (!theme) { drawBind(c, m, x, ry, w); ry += 17; }
+          for (Setting s : m.settings) {
+          if (!s.visible.getAsBoolean()) continue;
+          if (s instanceof Setting.Bool b) drawBool(c, m, b, x, ry, w);
+          else if (s instanceof Setting.Num n) drawNum(c, n, x, ry, w);
+          else if (s instanceof Setting.Mode md) drawMode(c, md, x, ry, w);
+          ry += rowH(s);
+          }
+          return h;
+          }
+          private void drawBind(DrawContext c, Module m, int x, int y, int w) {
+          Fonts.draw(c, "Keybind", x + 8, y + 4, DIM);
+          String kn = listening == m ? "..." : keyName(m.key); int kw = Math.max(34, Fonts.w(kn) + 10);
+          int kx = x + w - 8 - kw; chip(c, kx, y + 1, kw, 14, kn, listening == m || m.key >= 0, () -> listening = (listening == m ? null : m));
+          if (rclick && hitC(kx, y + 1, kw, 14)) { m.key = -1; listening = null; }
+          int tx = kx - 18; chip(c, tx, y + 1, 16, 14, "T", m.bindMode == 1, () -> m.bindMode = 1);
+          int hx = tx - 18; chip(c, hx, y + 1, 16, 14, "H", m.bindMode == 0, () -> m.bindMode = 0);
+          }
+          private void drawBool(DrawContext c, Module m, Setting.Bool b, int x, int y, int w) {
+          Fonts.draw(c, b.name, x + 8, y + 4, DIM);
+          int tx = x + w - 8 - 22; float a = an(m.name + b.name, b.v);
+          R.rrect(c, tx, y + 3, 22, 11, 5, R.mix(OFF, accent(), a));
+          R.circle(c, tx + 5 + (int) (12 * a) + 1, y + 8, 4, 0xFFFFFFFF);
+          if (hitC(x + 4, y, w - 8, 17) && click) b.v = !b.v;
+          }
+          private void drawMode(DrawContext c, Setting.Mode md, int x, int y, int w) {
+          Fonts.draw(c, md.name, x + 8, y + 4, DIM);
+          int bw = 58, bx = x + w - 8 - bw;
+          R.outline(c, bx, y + 1, bw, 14, 4, 0xFF4A4E65, hit(bx, y + 1, bw, 14) ? 0xFF303346 : 0xFF262938);
+          Fonts.center(c, md.cur(), bx + bw / 2 - 3, y + 4, TEXT); Fonts.draw(c, "v", bx + bw - 9, y + 4, DIM);
+          if (hitC(bx, y + 1, bw, 14)) { if (click) md.idx = (md.idx + 1) % md.modes.length; if (rclick) md.idx = (md.idx + md.modes.length - 1) % md.modes.length; }
+          }
+          private void drawNum(DrawContext c, Setting.Num n, int x, int y, int w) {
+          Fonts.draw(c, n.name, x + 8, y + 3, DIM);
+          String v = n.step >= 1 ? String.valueOf(n.i()) : n.step >= 0.1 ? String.format(Locale.ROOT, "%.1f", n.v) : String.format(Locale.ROOT, "%.2f", n.v);
+          int vw = Fonts.w(v) + 8; R.rrect(c, x + w - 8 - vw, y + 1, vw, 12, 3, ROW); Fonts.center(c, v, x + w - 8 - vw / 2, y + 3, TEXT);
+          int tx = x + 8, tw = w - 16, ty = y + 17;
+          float f = (float) ((n.v - n.min) / (n.max - n.min));
+          R.rrect(c, tx, ty, tw, 3, 1, 0xFF22242F);
+          R.rrect(c, tx, ty, Math.max(2, (int) (tw * f)), 3, 1, accent());
+          R.circle(c, tx + (int) (tw * f), ty + 1, 3.5, 0xFFFFFFFF);
+          if (click && hitC(tx - 3, ty - 5, tw + 6, 13)) { dragging = n; dragX = tx; dragW = tw; }
+          if (dragging == n && down) {
+          double t = Math.max(0, Math.min(1, (mx - dragX) / (double) dragW)); double val = n.min + t * (n.max - n.min);
+          val = Math.round(val / n.step) * n.step; n.v = Math.max(n.min, Math.min(n.max, val));
+          }
+          }
+          }
+          EOF_MEOW
+      - name: Write files 3
+        run: |
+          mkdir -p "proj/src/main/java/dev/meow/client/gui"
+          cat > "proj/src/main/java/dev/meow/client/gui/R.java" <<'EOF_MEOW'
+          package dev.meow.client.gui;
+          import net.minecraft.client.gui.DrawContext;
+          public final class R {
+          public static void rrect(DrawContext c, int x, int y, int w, int h, int r, int col) {
+          r = Math.max(0, Math.min(r, Math.min(w, h) / 2));
+          c.fill(x, y + r, x + w, y + h - r, col);
+          for (int i = 0; i < r; i++) {
+          double dy = r - i - 0.5; int in = (int) Math.round(r - Math.sqrt(r * r - dy * dy));
+          c.fill(x + in, y + i, x + w - in, y + i + 1, col);
+          c.fill(x + in, y + h - 1 - i, x + w - in, y + h - i, col);
+          }
+          }
+          public static void outline(DrawContext c, int x, int y, int w, int h, int r, int border, int fill) {
+          rrect(c, x, y, w, h, r, border); rrect(c, x + 1, y + 1, w - 2, h - 2, Math.max(0, r - 1), fill);
+          }
+          public static void circle(DrawContext c, int cx, int cy, double r, int col) {
+          int ri = (int) Math.ceil(r);
+          for (int dy = -ri; dy <= ri; dy++) {
+          double q = r * r - dy * dy; if (q < 0) continue; int dx = (int) Math.round(Math.sqrt(q));
+          c.fill(cx - dx, cy + dy, cx + dx, cy + dy + 1, col);
+          }
+          }
+          public static void glow(DrawContext c, int cx, int cy, double r, int rgb, float strength) {
+          for (int k = 0; k < 6; k++) {
+          double rr = r * (1.0 - k * 0.16); int a = (int) (255 * strength * 0.16);
+          circle(c, cx, cy, rr, (Math.min(255, a) << 24) | (rgb & 0xFFFFFF));
+          }
+          }
+          public static int mix(int a, int b, float t) {
+          int r = 0; for (int s = 24; s >= 0; s -= 8) { int x = (a >> s) & 255, y = (b >> s) & 255; r |= ((int) (x + (y - x) * t) & 255) << s; } return r;
+          }
+          public static int alpha(int col, int a) { return (a << 24) | (col & 0xFFFFFF); }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/AimAssist.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.entity.LivingEntity;
+          import net.minecraft.util.math.MathHelper;
+          public class AimAssist extends Module {
+          final Setting.Num speed = add(new Setting.Num("Speed", 1, 30, 0.5, 6));
+          final Setting.Num range = add(new Setting.Num("Range", 2, 8, 0.1, 5));
+          final Setting.Num fov = add(new Setting.Num("Fov", 10, 360, 5, 90));
+          final Setting.Num aim = add(new Setting.Num("Aim", 0, 100, 5, 65));
+          final Setting.Bool needClick = add(new Setting.Bool("Require Left Click", false));
+          public AimAssist() { super("Aim Assist", "Eases your aim onto the nearest target", Category.COMBAT); }
+          @Override public void onTick() {
+          if (needClick.v && !U.bindDown(mc.options.attackKey)) return;
+          LivingEntity t = U.target(range.v); if (t == null) return;
+          float[] r = U.rot(U.aimPoint(t, aim.v));
+          if (Math.abs(MathHelper.wrapDegrees(r[0] - mc.player.getYaw())) > fov.v / 2.0) return;
+          U.aim(U.aimPoint(t, aim.v), speed.v);
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/AutoCrystal.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.block.Blocks;
+          import net.minecraft.entity.decoration.EndCrystalEntity;
+          import net.minecraft.item.Items;
+          import net.minecraft.util.Hand;
+          import net.minecraft.util.hit.BlockHitResult;
+          import net.minecraft.util.hit.HitResult;
+          import net.minecraft.util.math.BlockPos;
+          import net.minecraft.util.math.Box;
+          import net.minecraft.util.math.Direction;
+          import net.minecraft.util.math.Vec3d;
+          import java.util.List;
+          public class AutoCrystal extends Module {
+          final Setting.Mode mode = add(new Setting.Mode("Mode", new String[]{"Legit", "Silent"}, 0));
+          final Setting.Num speed = add(new Setting.Num("Speed", 1, 20, 1, 3));
+          final Setting.Num cooldown = add(new Setting.Num("Cooldown", 0, 20, 1, 0));
+          private BlockPos base; private int timer;
+          public AutoCrystal() { super("Auto Crystal", "Hold left click on obsidian: places and breaks crystals", Category.COMBAT); }
+          @Override public void onStartTick() {
+          boolean held = U.bindDown(mc.options.attackKey) && mc.player.getMainHandStack().isOf(Items.END_CRYSTAL);
+          if (!held) { base = null; return; }
+          if (mc.crosshairTarget instanceof BlockHitResult b && b.getType() == HitResult.Type.BLOCK) {
+          var s = mc.world.getBlockState(b.getBlockPos());
+          if (s.isOf(Blocks.OBSIDIAN) || s.isOf(Blocks.BEDROCK)) base = b.getBlockPos();
+          }
+          if (base != null) { mc.options.attackKey.setPressed(false); mc.interactionManager.cancelBlockBreaking(); }
+          }
+          @Override public void onTick() {
+          if (base == null) return;
+          if (timer > 0) { timer--; return; }
+          boolean legit = mode.idx == 0;
+          BlockPos up = base.up();
+          List<EndCrystalEntity> list = mc.world.getEntitiesByClass(EndCrystalEntity.class, new Box(up).expand(0.2), e -> true);
+          if (!list.isEmpty()) {
+          EndCrystalEntity c = list.get(0);
+          boolean ok = U.face(c.getBoundingBox().getCenter(), legit, 60);
+          if (ok && U.dist(c) <= 4.5 && (!legit || U.rayHits(c, 4.6))) { U.attack(c, !legit); timer = speed.i() + cooldown.i(); }
+          return;
+          }
+          if (mc.world.getBlockState(up).isAir() && mc.world.getBlockState(up.up()).isAir()) {
+          Vec3d hv = new Vec3d(base.getX() + 0.5, base.getY() + 1.0, base.getZ() + 0.5);
+          if (!U.face(hv, legit, 60)) return;
+          mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(hv, Direction.UP, base, false));
+          mc.player.swingHand(Hand.MAIN_HAND);
+          if (!legit) U.restoreRot();
+          timer = speed.i();
+          }
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/AutoMace.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.entity.LivingEntity;
+          import net.minecraft.entity.player.PlayerEntity;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.util.math.Vec3d;
+          public class AutoMace extends Module {
+          final Setting.Mode mode = add(new Setting.Mode("Mode", new String[]{"Legit", "Silent"}, 0));
+          final Setting.Num speed = add(new Setting.Num("Speed", 1, 90, 1, 30));
+          final Setting.Num aim = add(new Setting.Num("Aim", 0, 100, 5, 65));
+          final Setting.Num range = add(new Setting.Num("Range", 2, 6, 0.1, 3.0));
+          final Setting.Num cooldown = add(new Setting.Num("Cooldown", 0, 1, 0.01, 0.95));
+          final Setting.Num minFall = add(new Setting.Num("Min Fall", 1.5, 300, 0.5, 1.5));
+          final Setting.Num ticks = add(new Setting.Num("Ticks", 0, 10, 1, 1));
+          final Setting.Bool weaponsOnly = add(new Setting.Bool("Weapons Only", true));
+          final Setting.Bool stunSlam = add(new Setting.Bool("Stun Slam", true));
+          final Setting.Bool swapBack = add(new Setting.Bool("Swap Back", true));
+          private int origSlot = -1, wait; private boolean restoreNext;
+          public AutoMace() { super("Auto Mace", "Swaps to the mace and smashes from height", Category.MACE); }
+          @Override public void onDisable() { restore(); wait = 0; }
+          private void restore() { if (origSlot >= 0 && mc.player != null) { U.select(origSlot); } origSlot = -1; }
+          private void swapTo(int slot) { if (U.cur() != slot) { if (origSlot < 0) origSlot = U.cur(); U.select(slot); wait = ticks.i(); } }
+          private boolean engage(LivingEntity t, boolean legit, double cd) {
+          Vec3d pt = U.aimPoint(t, aim.v);
+          boolean aligned = !legit || U.aim(pt, speed.v);
+          if (U.dist(t) > range.v || U.cd() < cd) return false;
+          return legit ? (aligned && U.rayHits(t, range.v + 0.2)) : true;
+          }
+          @Override public void onTick() {
+          if (restoreNext) { restore(); restoreNext = false; }
+          boolean legit = mode.idx == 0;
+          ItemStack held = mc.player.getMainHandStack();
+          if (weaponsOnly.v && origSlot < 0 && !U.isWeapon(held)) return;
+          LivingEntity t = U.target(Math.max(range.v + 1.5, 4.6));
+          boolean fall = U.falling(minFall.v);
+          if (t == null || (!fall && origSlot >= 0)) { if (origSlot >= 0 && swapBack.v) restore(); wait = 0; if (t == null) return; }
+          double d = U.dist(t);
+          if (fall && d <= range.v + (legit ? 1.2 : 0)) { smash(t, legit); return; }
+          if (U.isSpear(held) && d <= 4.5) {
+          U.aim(U.aimPoint(t, aim.v), speed.v);
+          if (U.cd() >= cooldown.v && U.rayHits(t, 4.6)) U.attack(t, false);
+          return;
+          }
+          if (U.isSword(held) && !fall && d <= range.v) {
+          int m = U.find(U::hasBreach);
+          if (m >= 0 && engage(t, legit, cooldown.v)) { int prev = U.cur(); U.select(m); U.attack(t, !legit); U.select(prev); }
+          }
+          }
+          private void smash(LivingEntity t, boolean legit) {
+          int mace = U.find(U::isMace); if (mace < 0) return;
+          if (stunSlam.v && t instanceof PlayerEntity pe && pe.isBlocking()) {
+          int axe = U.find(U::isAxe);
+          if (axe >= 0) { swapTo(axe); if (wait > 0) { wait--; return; } if (engage(t, legit, 0.9)) U.attack(t, !legit); return; }
+          }
+          swapTo(mace);
+          if (wait > 0) { wait--; if (legit) U.aim(U.aimPoint(t, aim.v), speed.v); return; }
+          if (engage(t, legit, cooldown.v)) { U.attack(t, !legit); if (swapBack.v) restoreNext = true; }
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/AutoPearlCatch.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.item.Items;
+          import net.minecraft.util.Hand;
+          public class AutoPearlCatch extends Module {
+          final Setting.Num speed = add(new Setting.Num("Speed", 0, 10, 1, 2));
+          private int step, timer, saved = -1;
+          public AutoPearlCatch() { super("Auto Pearl Catch", "Throws a pearl, then a wind charge", Category.MISC); }
+          @Override public void onEnable() { if (mc.player == null) return; step = 1; timer = 0; saved = U.cur(); }
+          @Override public void onDisable() { if (saved >= 0 && mc.player != null) U.select(saved); saved = -1; step = 0; }
+          @Override public void onTick() {
+          if (step == 0) return;
+          if (timer > 0) { timer--; return; }
+          if (step == 1) {
+          int p = U.find(s -> s.isOf(Items.ENDER_PEARL)); if (p < 0) { step = 0; return; }
+          U.select(p); mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND); mc.player.swingHand(Hand.MAIN_HAND);
+          step = 2; timer = speed.i();
+          } else if (step == 2) {
+          int w = U.find(s -> s.isOf(Items.WIND_CHARGE)); if (w < 0) { step = 0; return; }
+          U.select(w);
+          float pitch = mc.player.getPitch(); mc.player.setPitch(90f);
+          mc.interactionManager.interactItem(mc.player, Hand.MAIN_HAND); mc.player.swingHand(Hand.MAIN_HAND);
+          mc.player.setPitch(pitch);
+          if (saved >= 0) U.select(saved); step = 0;
+          }
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/BreachSwap.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.util.hit.EntityHitResult;
+          public class BreachSwap extends Module {
+          final Setting.Num ticks = add(new Setting.Num("Ticks", 0, 5, 1, 0));
+          private int back = -1, hold; private boolean prev;
+          public BreachSwap() { super("Breach Swap", "Hit with a sword, swing with your Breach mace", Category.MACE); }
+          @Override public void onStartTick() {
+          boolean d = U.bindDown(mc.options.attackKey); boolean click = d && !prev; prev = d;
+          if (back >= 0 || !click || !(mc.crosshairTarget instanceof EntityHitResult)) return;
+          if (!U.isSword(mc.player.getMainHandStack())) return;
+          int m = U.find(U::hasBreach); if (m < 0) return;
+          back = U.cur(); hold = ticks.i(); U.select(m);
+          }
+          @Override public void onTick() { if (back >= 0) { if (hold-- <= 0) { U.select(back); back = -1; } } }
+          @Override public void onDisable() { if (back >= 0) { U.select(back); back = -1; } }
+          }
+          EOF_MEOW
+      - name: Write files 4
+        run: |
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/MaceSwap.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.util.hit.EntityHitResult;
+          public class MaceSwap extends Module {
+          final Setting.Num cooldown = add(new Setting.Num("Cooldown", 0, 1, 0.01, 0.9));
+          final Setting.Bool weaponsOnly = add(new Setting.Bool("Weapons Only", true));
+          private int back = -1; private boolean prev;
+          public MaceSwap() { super("Mace Swap", "Swaps to the mace on the same tick while falling", Category.MACE); }
+          @Override public void onStartTick() {
+          boolean d = U.bindDown(mc.options.attackKey); boolean click = d && !prev; prev = d;
+          if (back >= 0 || !click || !(mc.crosshairTarget instanceof EntityHitResult)) return;
+          ItemStack h = mc.player.getMainHandStack();
+          if (U.isMace(h) || (weaponsOnly.v && !(U.isSword(h) || U.isAxe(h) || U.isSpear(h)))) return;
+          if (!U.falling(1.5) || U.cd() < cooldown.v) return;
+          int m = U.find(U::isMace); if (m < 0) return;
+          back = U.cur(); U.select(m);
+          }
+          @Override public void onTick() { if (back >= 0) { U.select(back); back = -1; } }
+          @Override public void onDisable() { if (back >= 0) { U.select(back); back = -1; } }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/SafeAnchors.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.block.Blocks;
+          import net.minecraft.item.Items;
+          import net.minecraft.util.Hand;
+          import net.minecraft.util.hit.BlockHitResult;
+          import net.minecraft.util.hit.HitResult;
+          import net.minecraft.util.math.BlockPos;
+          import net.minecraft.util.math.Direction;
+          import net.minecraft.util.math.Vec3d;
+          public class SafeAnchors extends Module {
+          final Setting.Mode mode = add(new Setting.Mode("Mode", new String[]{"Legit", "Silent"}, 0));
+          final Setting.Num speed = add(new Setting.Num("Speed", 1, 10, 1, 2));
+          final Setting.Num cooldown = add(new Setting.Num("Cooldown", 0, 20, 1, 0));
+          private int step, timer, timeout, saved = -1; private boolean prevUse;
+          private BlockPos base, anchor; private Direction face;
+          public SafeAnchors() { super("Safe Anchors", "Anchor with 1 glowstone + glowstone shield", Category.COMBAT); }
+          @Override public void onStartTick() {
+          boolean use = U.bindDown(mc.options.useKey); boolean anchorHeld = mc.player.getMainHandStack().isOf(Items.RESPAWN_ANCHOR);
+          if (step == 0 && use && !prevUse && anchorHeld && mc.crosshairTarget instanceof BlockHitResult b && b.getType() == HitResult.Type.BLOCK) {
+          base = b.getBlockPos(); face = b.getSide(); anchor = base.offset(face); step = 1; timer = 0; timeout = 0; saved = U.cur();
+          }
+          if (step > 0 || (anchorHeld && use)) mc.options.useKey.setPressed(false);
+          prevUse = use;
+          }
+          private Vec3d faceCenter(BlockPos p, Direction d) { return Vec3d.ofCenter(p).add(d.getOffsetX() * 0.5, d.getOffsetY() * 0.5, d.getOffsetZ() * 0.5); }
+          private void finish() { step = 0; if (saved >= 0) { U.select(saved); saved = -1; } }
+          @Override public void onTick() {
+          if (step == 0) return;
+          if (timer > 0) { timer--; return; }
+          if (++timeout > 60) { finish(); return; }
+          boolean legit = mode.idx == 0;
+          switch (step) {
+          case 1 -> {
+          int a = U.find(s -> s.isOf(Items.RESPAWN_ANCHOR)); if (a < 0) { finish(); return; } U.select(a);
+          Vec3d hv = faceCenter(base, face);
+          if (!U.face(hv, legit, 60)) return;
+          mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(hv, face, base, false));
+          mc.player.swingHand(Hand.MAIN_HAND); if (!legit) U.restoreRot();
+          step = 2; timer = speed.i() + cooldown.i(); timeout = 0;
+          }
+          case 2 -> {
+          if (!mc.world.getBlockState(anchor).isOf(Blocks.RESPAWN_ANCHOR)) return;
+          int g = U.find(s -> s.isOf(Items.GLOWSTONE)); if (g < 0) { finish(); return; } U.select(g);
+          Vec3d hv = faceCenter(anchor, Direction.UP);
+          if (!U.face(hv, legit, 60)) return;
+          mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(hv, Direction.UP, anchor, false));
+          mc.player.swingHand(Hand.MAIN_HAND); if (!legit) U.restoreRot();
+          step = 3; timer = speed.i() + cooldown.i(); timeout = 0;
+          }
+          case 3 -> {
+          int g = U.find(s -> s.isOf(Items.GLOWSTONE)); if (g < 0) { finish(); return; } U.select(g);
+          Vec3d pc = Vec3d.ofCenter(anchor);
+          double dx = mc.player.getX() - pc.x, dz = mc.player.getZ() - pc.z;
+          Direction dir = Math.abs(dx) > Math.abs(dz) ? (dx > 0 ? Direction.EAST : Direction.WEST) : (dz > 0 ? Direction.SOUTH : Direction.NORTH);
+          BlockPos shield = anchor.offset(dir);
+          if (!mc.world.getBlockState(shield).isAir()) { finish(); return; }
+          for (Direction d : Direction.values()) {
+          BlockPos nb = shield.offset(d);
+          if (nb.equals(anchor) || mc.world.getBlockState(nb).isAir()) continue;
+          Vec3d hv = faceCenter(nb, d.getOpposite());
+          if (!U.face(hv, legit, 60)) return;
+          mc.interactionManager.interactBlock(mc.player, Hand.MAIN_HAND, new BlockHitResult(hv, d.getOpposite(), nb, false));
+          mc.player.swingHand(Hand.MAIN_HAND); if (!legit) U.restoreRot();
+          break;
+          }
+          finish();
+          }
+          default -> finish();
+          }
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/modules"
+          cat > "proj/src/main/java/dev/meow/client/modules/TriggerBot.java" <<'EOF_MEOW'
+          package dev.meow.client.modules;
+          import dev.meow.client.core.*;
+          import dev.meow.client.util.U;
+          import net.minecraft.entity.LivingEntity;
+          import net.minecraft.util.hit.EntityHitResult;
+          public class TriggerBot extends Module {
+          final Setting.Bool weaponsOnly = add(new Setting.Bool("Weapons Only", true));
+          public TriggerBot() { super("Trigger Bot", "Attacks when your crosshair is on a target", Category.COMBAT); }
+          @Override public void onTick() {
+          if (!(mc.crosshairTarget instanceof EntityHitResult r) || !(r.getEntity() instanceof LivingEntity t) || !t.isAlive()) return;
+          if (weaponsOnly.v && !U.isWeapon(mc.player.getMainHandStack())) return;
+          if (U.cd() < 0.92f) return;
+          U.attack(t, false);
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/java/dev/meow/client/util"
+          cat > "proj/src/main/java/dev/meow/client/util/U.java" <<'EOF_MEOW'
+          package dev.meow.client.util;
+          import net.minecraft.client.MinecraftClient;
+          import net.minecraft.client.option.KeyBinding;
+          import net.minecraft.client.network.ClientPlayerEntity;
+          import net.minecraft.client.util.InputUtil;
+          import net.minecraft.enchantment.Enchantments;
+          import net.minecraft.entity.Entity;
+          import net.minecraft.entity.LivingEntity;
+          import net.minecraft.entity.mob.HostileEntity;
+          import net.minecraft.entity.player.PlayerEntity;
+          import net.minecraft.item.ItemStack;
+          import net.minecraft.item.Items;
+          import net.minecraft.network.packet.c2s.play.PlayerMoveC2SPacket;
+          import net.minecraft.registry.Registries;
+          import net.minecraft.registry.tag.ItemTags;
+          import net.minecraft.util.Hand;
+          import net.minecraft.util.math.Box;
+          import net.minecraft.util.math.MathHelper;
+          import net.minecraft.util.math.Vec3d;
+          import org.lwjgl.glfw.GLFW;
+          import java.util.function.Predicate;
+          public final class U {
+          public static final MinecraftClient mc = MinecraftClient.getInstance();
+          private U() {}
+          public static long win() { return mc.getWindow().getHandle(); }
+          public static boolean keyDown(int k) { return k >= 0 && GLFW.glfwGetKey(win(), k) == GLFW.GLFW_PRESS; }
+          public static boolean mouseDown(int b) { return GLFW.glfwGetMouseButton(win(), b) == GLFW.GLFW_PRESS; }
+          public static boolean bindDown(KeyBinding kb) {
+          InputUtil.Key k = InputUtil.fromTranslationKey(kb.getBoundKeyTranslationKey());
+          return k.getCategory() == InputUtil.Type.MOUSE ? mouseDown(k.getCode()) : keyDown(k.getCode());
+          }
+          public static int cur() { return mc.player.getInventory().getSelectedSlot(); }
+          public static void select(int s) { mc.player.getInventory().setSelectedSlot(s); }
+          public static int find(Predicate<ItemStack> f) { for (int i = 0; i < 9; i++) if (f.test(mc.player.getInventory().getStack(i))) return i; return -1; }
+          public static boolean isMace(ItemStack s) { return s.isOf(Items.MACE); }
+          public static boolean isSword(ItemStack s) { return s.isIn(ItemTags.SWORDS); }
+          public static boolean isAxe(ItemStack s) { return s.isIn(ItemTags.AXES); }
+          public static boolean isSpear(ItemStack s) { return Registries.ITEM.getId(s.getItem()).getPath().endsWith("_spear"); }
+          public static boolean isWeapon(ItemStack s) { return isSword(s) || isAxe(s) || isMace(s) || isSpear(s); }
+          public static boolean hasBreach(ItemStack s) {
+          return s.isOf(Items.MACE) && s.getEnchantments().getEnchantments().stream().anyMatch(e -> e.matchesKey(Enchantments.BREACH));
+          }
+          public static Vec3d closest(Box b, Vec3d p) { return new Vec3d(MathHelper.clamp(p.x, b.minX, b.maxX), MathHelper.clamp(p.y, b.minY, b.maxY), MathHelper.clamp(p.z, b.minZ, b.maxZ)); }
+          public static double dist(Entity e) { Vec3d eye = mc.player.getEyePos(); return eye.distanceTo(closest(e.getBoundingBox(), eye)); }
+          public static Vec3d aimPoint(Entity e, double pct) { return new Vec3d(e.getX(), e.getY() + e.getHeight() * pct / 100.0, e.getZ()); }
+          public static LivingEntity target(double range) {
+          LivingEntity best = null; double bd = Double.MAX_VALUE;
+          for (Entity e : mc.world.getEntities()) {
+          if (!(e instanceof LivingEntity le) || e == mc.player || !le.isAlive() || le.isSpectator()) continue;
+          if (!(le instanceof PlayerEntity || le instanceof HostileEntity)) continue;
+          double d = dist(le);
+          if (d <= range && d < bd) { bd = d; best = le; }
+          }
+          return best;
+          }
+          public static float[] rot(Vec3d to) {
+          Vec3d eye = mc.player.getEyePos();
+          double dx = to.x - eye.x, dy = to.y - eye.y, dz = to.z - eye.z;
+          float yaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+          float pitch = (float) -Math.toDegrees(Math.atan2(dy, Math.sqrt(dx * dx + dz * dz)));
+          return new float[]{yaw, MathHelper.clamp(pitch, -90f, 90f)};
+          }
+          public static boolean aim(Vec3d to, double speed) {
+          ClientPlayerEntity p = mc.player; float[] r = rot(to);
+          float dy = MathHelper.wrapDegrees(r[0] - p.getYaw()), dp = r[1] - p.getPitch();
+          float sp = (float) speed;
+          float sy = MathHelper.clamp(dy, -sp, sp), spp = MathHelper.clamp(dp, -sp, sp);
+          double f = mc.options.getMouseSensitivity().getValue() * 0.6 + 0.2; double gcd = f * f * f * 8.0 * 0.15;
+          if (Math.abs(dy) > gcd) sy = (float) (Math.round(sy / gcd) * gcd);
+          if (Math.abs(dp) > gcd) spp = (float) (Math.round(spp / gcd) * gcd);
+          p.setYaw(p.getYaw() + sy); p.setPitch(MathHelper.clamp(p.getPitch() + spp, -90f, 90f));
+          return Math.abs(MathHelper.wrapDegrees(r[0] - p.getYaw())) < 2.5f && Math.abs(r[1] - p.getPitch()) < 2.5f;
+          }
+          public static boolean rayHits(Entity t, double range) {
+          ClientPlayerEntity p = mc.player; Vec3d eye = p.getEyePos(); Vec3d end = eye.add(p.getRotationVec(1f).multiply(range));
+          Box b = t.getBoundingBox().expand(t.getTargetingMargin());
+          return b.contains(eye) || b.raycast(eye, end).isPresent();
+          }
+          public static void sendRot(float yaw, float pitch) {
+          mc.player.networkHandler.sendPacket(new PlayerMoveC2SPacket.LookAndOnGround(yaw, pitch, mc.player.isOnGround(), mc.player.horizontalCollision));
+          }
+          public static boolean face(Vec3d to, boolean legit, double speed) {
+          if (legit) return aim(to, speed);
+          float[] r = rot(to); sendRot(r[0], r[1]); return true;
+          }
+          public static void restoreRot() { sendRot(mc.player.getYaw(), mc.player.getPitch()); }
+          public static void attack(Entity t, boolean silent) {
+          ClientPlayerEntity p = mc.player;
+          if (silent) { float[] r = rot(aimPoint(t, 65)); sendRot(r[0], r[1]); }
+          mc.interactionManager.attackEntity(p, t); p.swingHand(Hand.MAIN_HAND);
+          if (silent) restoreRot();
+          }
+          public static float cd() { return mc.player.getAttackCooldownProgress(0.5f); }
+          public static boolean falling(double minFall) {
+          ClientPlayerEntity p = mc.player;
+          return !p.isOnGround() && !p.isClimbing() && !p.isTouchingWater() && p.getVelocity().y < 0 && (double) p.fallDistance >= minFall;
+          }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/resources"
+          cat > "proj/src/main/resources/fabric.mod.json" <<'EOF_MEOW'
+          {
+            "schemaVersion": 1,
+            "id": "meowclient",
+            "version": "${version}",
+            "name": "Meow Client",
+            "description": "Meow Client (single-player)",
+            "environment": "client",
+            "entrypoints": { "client": ["dev.meow.client.MeowClient"] },
+            "depends": { "fabricloader": ">=0.16.0", "minecraft": "~1.21.11", "java": ">=21", "fabric-api": "*" }
+          }
+          EOF_MEOW
+          mkdir -p "proj/src/main/resources/assets/meowclient/font"
+          cat > "proj/src/main/resources/assets/meowclient/font/ui.json" <<'EOF_MEOW'
+          { "providers": [ { "type": "ttf", "file": "meowclient:inter.ttf", "size": 9.0, "oversample": 8.0, "shift": [0, 0] } ] }
+          EOF_MEOW
+      - name: Build
+        run: cd proj && gradle build --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MeowClient-jar
+          path: proj/build/libs/*.jar
